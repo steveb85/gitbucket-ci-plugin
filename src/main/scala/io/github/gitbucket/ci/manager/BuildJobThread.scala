@@ -101,50 +101,82 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
           throw new BuildJobCancelException()
         }
 
-        sb.append(s"git clone ${job.buildUserName}/${job.buildRepositoryName}\n")
+        // runProcess runs with buildDir as its working directory, but buildDir is only
+        // created later when the build log is saved.
+        if(!buildDir.exists()){
+          buildDir.mkdirs()
+        }
 
-        // git clone
-        Using.resource(Git.cloneRepository()
-          .setURI(getRepositoryDir(job.buildUserName, job.buildRepositoryName).toURI.toString)
-          .setDirectory(dir).call()) { git =>
+        // One deadline for the whole build, shared by the clone, the checkout and all the processes it runs.
+        val deadline =
+          if(systemCIConfig.buildTimeoutMinutes > 0) startTime.getTime + systemCIConfig.buildTimeoutMinutes.toLong * 60 * 1000 else Long.MaxValue
+
+        val uri = getRepositoryDir(job.buildUserName, job.buildRepositoryName).toURI.toString
+
+        if(isGitAvailable){
+          sb.append(s"git clone ${job.buildUserName}/${job.buildRepositoryName}\n")
+          val cloneExit = runProcess(job, buildDir, buildDir,
+            s"git -c protocol.file.allow=always clone --no-hardlinks $uri ${dir.getAbsolutePath}",
+            deadline, targetUrl, "CLONE TIMEOUT: build time limit exceeded, killing the clone process\n")
 
           if(cancelled.get() == true){
             throw new BuildJobCancelException()
+          }
+          if(cloneExit != 0){
+            throw new RuntimeException(s"git clone failed with exit code ${cloneExit}")
           }
 
           sb.append(s"git checkout ${job.sha}\n")
-
-          // git checkout
-          git.checkout().setName(job.sha).call()
+          val checkoutExit = runProcess(job, buildDir, dir,
+            s"git checkout ${job.sha}",
+            deadline, targetUrl, "CHECKOUT TIMEOUT: build time limit exceeded, killing the checkout process\n")
 
           if(cancelled.get() == true){
             throw new BuildJobCancelException()
           }
-
-          // One deadline for the whole build, shared by all the processes it runs.
-          val deadline =
-            if(systemCIConfig.buildTimeoutMinutes > 0) startTime.getTime + systemCIConfig.buildTimeoutMinutes.toLong * 60 * 1000 else Long.MaxValue
-
-          job.config.buildType match {
-            case "script" =>
-              runScriptJob(job, buildDir, dir, deadline, targetUrl)
-            case "file" =>
-              runFileJob(job, buildDir, dir, deadline, targetUrl)
-            case "docker" =>
-              if(systemCIConfig.enableDocker){
-                runDockerJob(job, buildDir, dir, dockerCommand, deadline, targetUrl)
-              }else{
-                throw new RuntimeException("Docker job is disabled.")
-              }
-            case "docker-compose" =>
-              if(systemCIConfig.enableDockerCompose){
-                runDockerComposeJob(job, buildDir, dir, dockerComposeCommand, deadline, targetUrl)
-              }else{
-                throw new RuntimeException("Docker compose job is disabled.")
-              }
-            case _ =>
-              throw new MatchError("Invalid build type: " + job.config.buildType)
+          if(checkoutExit != 0){
+            throw new RuntimeException(s"git checkout failed with exit code ${checkoutExit}")
           }
+        }else{
+          // Fallback for hosts without the git CLI.
+          Using.resource(Git.cloneRepository()
+            .setURI(uri)
+            .setDirectory(dir).call()) { git =>
+
+            if(cancelled.get() == true){
+              throw new BuildJobCancelException()
+            }
+
+            sb.append(s"git checkout ${job.sha}\n")
+
+            // git checkout
+            git.checkout().setName(job.sha).call()
+
+            if(cancelled.get() == true){
+              throw new BuildJobCancelException()
+            }
+          }
+        }
+
+        job.config.buildType match {
+          case "script" =>
+            runScriptJob(job, buildDir, dir, deadline, targetUrl)
+          case "file" =>
+            runFileJob(job, buildDir, dir, deadline, targetUrl)
+          case "docker" =>
+            if(systemCIConfig.enableDocker){
+              runDockerJob(job, buildDir, dir, dockerCommand, deadline, targetUrl)
+            }else{
+              throw new RuntimeException("Docker job is disabled.")
+            }
+          case "docker-compose" =>
+            if(systemCIConfig.enableDockerCompose){
+              runDockerComposeJob(job, buildDir, dir, dockerComposeCommand, deadline, targetUrl)
+            }else{
+              throw new RuntimeException("Docker compose job is disabled.")
+            }
+          case _ =>
+            throw new MatchError("Invalid build type: " + job.config.buildType)
         }
       } catch {
         case e: Exception => {
@@ -242,6 +274,19 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
   private def runBuildProcess(job: BuildJob, buildDir: File, workspaceDir: File, command: String, deadline: Long, targetUrl: Option[String]): Int =
     runProcess(job, buildDir, workspaceDir, command, deadline, targetUrl,
       "BUILD TIMEOUT: build time limit exceeded, killing the build process\n")
+
+  /** Whether the git CLI is available; when it is, the clone and checkout run as real processes. */
+  private def isGitAvailable: Boolean = {
+    try {
+      new ProcessBuilder("git", "--version")
+        .redirectErrorStream(true)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .start()
+        .waitFor() == 0
+    } catch {
+      case _: Exception => false
+    }
+  }
 
   /**
    * @param deadline epoch millis at which the process is killed; Long.MaxValue disables it.
