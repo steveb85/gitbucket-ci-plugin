@@ -7,17 +7,26 @@ import gitbucket.core.util.Directory.getRepositoryDir
 import gitbucket.core.util.JGitUtil
 import io.github.gitbucket.ci.model.CIConfig
 import io.github.gitbucket.ci.service.CIService
+import io.github.gitbucket.ci.util.CIUtils
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.transport.{ReceiveCommand, ReceivePack}
+import org.slf4j.LoggerFactory
 import profile.blockingApi._
 import scala.util.Using
 
 class CICommitHook extends ReceiveHook
   with CIService with RepositoryService with AccountService with CommitStatusService with SystemSettingsService {
 
+  private val logger = LoggerFactory.getLogger(classOf[CICommitHook])
+
   override def postReceive(owner: String, repository: String, receivePack: ReceivePack,
                            command: ReceiveCommand, pusher: String, mergePullRequest: Boolean)(implicit session: Session): Unit = {
+    if(CIUtils.isMergedOnlyRepository(owner, repository)){
+      logger.info(s"CI: ${owner}/${repository} is in CI_MERGED_ONLY_REPOS — skipping push build")
+      return
+    }
+
     val branch = command.getRefName.stripPrefix("refs/heads/")
     if(branch != command.getRefName && command.getType != ReceiveCommand.Type.DELETE){
       getRepository(owner, repository).foreach { repositoryInfo =>
@@ -60,7 +69,10 @@ class CICommitHook extends ReceiveHook
             buildConfig <- loadCIConfig(pullreq.userName, pullreq.repositoryName)
           } yield {
             val isFork = owner != pullreq.userName || repository != pullreq.repositoryName
-            if(buildConfig.skipWordsSeq.find(revCommit.getFullMessage.contains).isEmpty && buildConfig.allowsBuild(isFork)){
+            // A push to a fork's PR branch still arrives here; don't build it for a merged-only base repo.
+            if(buildConfig.skipWordsSeq.find(revCommit.getFullMessage.contains).isEmpty &&
+               buildConfig.allowsBuild(isFork) &&
+               !CIUtils.isMergedOnlyRepository(pullreq.userName, pullreq.repositoryName)){
               runBuild(
                 userName            = pullreq.userName,
                 repositoryName      = pullreq.repositoryName,

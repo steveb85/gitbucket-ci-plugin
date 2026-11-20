@@ -1,6 +1,6 @@
 name := "gitbucket-ci-plugin"
 organization := "io.github.gitbucket"
-version := "1.12.2"
+version := "1.12.4"
 scalaVersion := "2.13.18"
 gitbucketVersion := "4.48.0"
 scalacOptions ++= Seq("-deprecation", "-Xsource:3-cross", "-Wconf:msg=will always yield:e")

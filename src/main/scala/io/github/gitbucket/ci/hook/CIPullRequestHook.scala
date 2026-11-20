@@ -9,7 +9,9 @@ import gitbucket.core.service._
 import gitbucket.core.util.Directory.getRepositoryDir
 import gitbucket.core.util.JGitUtil
 import io.github.gitbucket.ci.service.CIService
+import io.github.gitbucket.ci.util.CIUtils
 import org.eclipse.jgit.api.Git
+import org.slf4j.LoggerFactory
 import profile.api._
 import scala.util.Using
 
@@ -29,6 +31,8 @@ class CIPullRequestHook extends PullRequestHook
   with WebHookPullRequestService with WebHookPullRequestReviewCommentService with ActivityService with MergeService
   with RepositoryService with LabelsService with PrioritiesService with MilestonesService with CIService 
   with RequestCache {
+
+  private val logger = LoggerFactory.getLogger(classOf[CIPullRequestHook])
 
   private def runBuildWith(issue: Issue, repository: RepositoryInfo, isMergeRequest: Boolean)(implicit session: Session, context: Context): Unit = {
     if(issue.isPullRequest){
@@ -74,8 +78,13 @@ class CIPullRequestHook extends PullRequestHook
     }
   }
 
-  override def created(issue: Issue, repository: RepositoryInfo)(implicit session: Session, context: Context): Unit = 
-    runBuildWith(issue, repository, false)
+  override def created(issue: Issue, repository: RepositoryInfo)(implicit session: Session, context: Context): Unit = {
+    if(CIUtils.isMergedOnlyRepository(issue.userName, issue.repositoryName)){
+      logger.info(s"CI: ${issue.userName}/${issue.repositoryName} is in CI_MERGED_ONLY_REPOS — skipping PR-open build")
+    }else{
+      runBuildWith(issue, repository, false)
+    }
+  }
 
   override def merged(issue: Issue, repository: RepositoryInfo)(implicit session: Session, context: Context): Unit = 
     runBuildWith(issue, repository, true)
@@ -83,7 +92,7 @@ class CIPullRequestHook extends PullRequestHook
 
   override def addedComment(commentId: Int, content: String, issue: Issue, repository: RepositoryInfo)
                            (implicit session: Session, context: Context): Unit = {
-    if(issue.isPullRequest){
+    if(issue.isPullRequest && !CIUtils.isMergedOnlyRepository(issue.userName, issue.repositoryName)){
       for {
         (_, pullreq) <- getPullRequest(issue.userName, issue.repositoryName, issue.issueId)
         buildAuthor  <- context.loginAccount

@@ -15,6 +15,16 @@ object CIUtils {
   /** The build log, the only file kept once a build directory is trimmed. */
   val OutputFileName = "output"
 
+  /** Repositories that should build only when a pull request is merged, as owner/repo. */
+  val MergedOnlyRepositories: Set[String] =
+    parseRepositoryList(sys.env.getOrElse("CI_MERGED_ONLY_REPOS", ""))
+
+  private[ci] def parseRepositoryList(value: String): Set[String] =
+    value.split(",").iterator.map(_.trim).filter(_.nonEmpty).toSet
+
+  def isMergedOnlyRepository(userName: String, repositoryName: String): Boolean =
+    MergedOnlyRepositories.contains(s"$userName/$repositoryName")
+
   def getBuildDir(userName: String, repositoryName: String, buildNumber: Int): File = {
     val dir = Directory.getRepositoryFilesDir(userName, repositoryName)
     new java.io.File(dir, s"build/${buildNumber}")

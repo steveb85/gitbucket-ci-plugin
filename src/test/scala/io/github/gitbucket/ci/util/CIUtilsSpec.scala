@@ -17,6 +17,11 @@ class CIUtilsSpec extends AnyFunSuite {
     assert(CIUtils.isWindows == (java.io.File.separatorChar == '\\'))
   }
 
+  test("parseRepositoryList trims entries and drops blanks") {
+    assert(CIUtils.parseRepositoryList(" node/studioassistant, , other/repo ") ==
+      Set("node/studioassistant", "other/repo"))
+  }
+
   test("colorize renders plain text unchanged (no ANSI codes)") {
     assert(CIUtils.colorize("hello world") == "hello world")
   }

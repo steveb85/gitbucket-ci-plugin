@@ -111,21 +111,24 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
         val deadline =
           if(systemCIConfig.buildTimeoutMinutes > 0) startTime.getTime + systemCIConfig.buildTimeoutMinutes.toLong * 60 * 1000 else Long.MaxValue
 
-        // Path.toUri produces file:///...; File.toURI produces file:/..., which the git CLI
-        // parses as an scp-style "file" host and hands to ssh.
-        val uri = getRepositoryDir(job.buildUserName, job.buildRepositoryName).toPath.toUri.toString
+        // The CLI gets a plain filesystem path. A file:// URI makes git run upload-pack and
+        // resolve deltas (tens of seconds on this repo); a path clone just copies the pack.
+        // The URI is kept for the JGit fallback only.
+        val repositoryDir = getRepositoryDir(job.buildUserName, job.buildRepositoryName)
+        val repoPath = repositoryDir.getAbsolutePath
+        val uri = repositoryDir.toPath.toUri.toString
 
         if(isGitAvailable){
           sb.append(s"git clone ${job.buildUserName}/${job.buildRepositoryName}\n")
           val cloneExit = runProcess(job, buildDir, buildDir,
-            s"git -c protocol.file.allow=always clone --no-hardlinks $uri ${dir.getAbsolutePath}",
+            s"git -c protocol.file.allow=always clone --no-hardlinks $repoPath ${dir.getAbsolutePath}",
             deadline, targetUrl, "CLONE TIMEOUT: build time limit exceeded, killing the clone process\n")
 
           if(cancelled.get() == true){
             throw new BuildJobCancelException()
           }
           if(cloneExit != 0){
-            throw new RuntimeException(s"git clone failed with exit code ${cloneExit}: $uri -> ${dir.getAbsolutePath}")
+            throw new RuntimeException(s"git clone failed with exit code ${cloneExit}: $repoPath -> ${dir.getAbsolutePath}")
           }
 
           sb.append(s"git checkout ${job.sha}\n")
