@@ -10,6 +10,7 @@ import gitbucket.core.model.Profile.profile.blockingApi._
 import io.github.gitbucket.ci.controller.{CIApiController, CIController}
 import io.github.gitbucket.ci.hook.{CICommitHook, CIPullRequestHook, CIRepositoryHook}
 import io.github.gitbucket.ci.manager.BuildManager
+import io.github.gitbucket.ci.util.BuildCleanup
 import io.github.gitbucket.solidbase.migration.LiquibaseMigration
 import io.github.gitbucket.solidbase.model.Version
 import java.io.File
@@ -73,7 +74,8 @@ class Plugin extends gitbucket.core.plugin.Plugin with CIService with AccountSer
     new Version("1.12.1"),
     new Version("1.12.2"),
     new Version("1.12.3"),
-    new Version("1.12.4")
+    new Version("1.12.4"),
+    new Version("1.12.5")
   )
 
   override val assetsMappings = Seq("/ci" -> "/gitbucket/ci/assets")
@@ -107,5 +109,6 @@ class Plugin extends gitbucket.core.plugin.Plugin with CIService with AccountSer
   override def shutdown(registry: PluginRegistry, context: ServletContext,
                         settings: SystemSettingsService.SystemSettings): Unit = {
     BuildManager.shutdownBuildManager()
+    BuildCleanup.shutdown()
   }
 }

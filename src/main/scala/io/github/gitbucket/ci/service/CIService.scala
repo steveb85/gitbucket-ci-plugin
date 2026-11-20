@@ -6,7 +6,7 @@ import io.github.gitbucket.ci.model._
 import io.github.gitbucket.ci.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
 import gitbucket.core.service.{AccountService, RepositoryService}
-import io.github.gitbucket.ci.util.CIUtils
+import io.github.gitbucket.ci.util.{BuildCleanup, CIUtils}
 import org.apache.commons.io.FileUtils
 import org.slf4j.LoggerFactory
 import scala.jdk.CollectionConverters._
@@ -161,28 +161,33 @@ trait CIService { self: AccountService with RepositoryService =>
     }.toSeq
   }
 
-  def saveCIResult(result: CIResult, output: String, systemConfig: CISystemConfig)(implicit s: Session): Unit = {
+  def saveCIResult(result: CIResult, output: String, systemConfig: CISystemConfig)(implicit s: Session): Seq[BuildCleanup.Task] = {
+    val cleanup = scala.collection.mutable.ListBuffer.empty[BuildCleanup.Task]
+
     // Delete older results
     val results = getCIResults(result.userName, result.repositoryName).sortBy(_.buildNumber)
     if (results.length >= systemConfig.maxBuildHistory){
-      results.take(results.length - systemConfig.maxBuildHistory + 1).foreach { result =>
+      results.take(results.length - systemConfig.maxBuildHistory + 1).foreach { oldResult =>
         // Audit log the deletion before it happens
         logger.info(
-          s"Deleting CI build history for ${result.userName}/${result.repositoryName}#${result.buildNumber} " +
+          s"Deleting CI build history for ${oldResult.userName}/${oldResult.repositoryName}#${oldResult.buildNumber} " +
           s"(exceeded maxBuildHistory=${systemConfig.maxBuildHistory})"
         )
 
         // Delete from database
         CIResults.filter { t =>
-          (t.userName       === result.userName.bind) &&
-          (t.repositoryName === result.repositoryName.bind) &&
-          (t.buildNumber    === result.buildNumber.bind)
+          (t.userName       === oldResult.userName.bind) &&
+          (t.repositoryName === oldResult.repositoryName.bind) &&
+          (t.buildNumber    === oldResult.buildNumber.bind)
         }.delete
 
-        // Delete files
-        val buildDir = CIUtils.getBuildDir(result.userName, result.repositoryName, result.buildNumber)
+        // Delete files off the build thread
+        val buildDir = CIUtils.getBuildDir(oldResult.userName, oldResult.repositoryName, oldResult.buildNumber)
         if(buildDir.exists){
-          FileUtils.deleteQuietly(buildDir)
+          cleanup += BuildCleanup.Delete(
+            buildDir,
+            s"${oldResult.userName}/${oldResult.repositoryName}#${oldResult.buildNumber}"
+          )
         }
       }
     }
@@ -198,22 +203,17 @@ trait CIService { self: AccountService with RepositoryService =>
     FileUtils.write(new java.io.File(buildDir, CIUtils.OutputFileName), output, "UTF-8")
 
     // Older builds keep only their log: workspaces and tool caches are what fills the disk.
+    // The caller submits these after the transaction commits, so neither the UI nor the commit
+    // status waits for thousands of files to be removed from the shared volume.
     val stored = getCIResults(result.userName, result.repositoryName).map(_.buildNumber)
     CIUtils.buildsToTrim(stored, systemConfig.maxKeptWorkspaces).foreach { buildNumber =>
-      val trimmed = CIUtils.trimBuildDir(CIUtils.getBuildDir(result.userName, result.repositoryName, buildNumber))
-      val failed = trimmed.collect { case (file, false) => file.getName }
-      if (failed.nonEmpty) {
-        logger.warn(
-          s"Could not delete ${failed.mkString(", ")} from the build directory of " +
-          s"${result.userName}/${result.repositoryName}#${buildNumber}; will retry after the next build"
-        )
-      } else if (trimmed.nonEmpty) {
-        logger.info(
-          s"Trimmed build directory of ${result.userName}/${result.repositoryName}#${buildNumber} to its log " +
-          s"(exceeded maxKeptWorkspaces=${systemConfig.maxKeptWorkspaces})"
-        )
-      }
+      cleanup += BuildCleanup.Trim(
+        CIUtils.getBuildDir(result.userName, result.repositoryName, buildNumber),
+        s"${result.userName}/${result.repositoryName}#${buildNumber}"
+      )
     }
+
+    cleanup.toSeq
   }
 
   def getCIResultOutput(result: CIResult): String = {

@@ -13,7 +13,7 @@ import gitbucket.core.util.Directory.getRepositoryDir
 import gitbucket.core.util.Mailer
 import io.github.gitbucket.ci.model.CIResult
 import io.github.gitbucket.ci.service._
-import io.github.gitbucket.ci.util.{CIUtils, JobStatus}
+import io.github.gitbucket.ci.util.{BuildCleanup, CIUtils, JobStatus}
 import io.github.gitbucket.markedj.{Marked, Options}
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.exception.ExceptionUtils
@@ -202,8 +202,8 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
       val endTime = new java.util.Date()
 
       // Create or update commit status
-      val recipients = Database() withTransaction { implicit session =>
-        saveCIResult(
+      val (recipients, cleanup) = Database() withTransaction { implicit session =>
+        val cleanupTasks = saveCIResult(
           CIResult(
             userName            = job.userName,
             repositoryName      = job.repositoryName,
@@ -240,14 +240,20 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
           creator        = job.buildAuthor // TODO right??
         )
 
-        if(job.config.notification && settings.useSMTP && exitValue != 0){
+        val recipients = if(job.config.notification && settings.useSMTP && exitValue != 0){
           val committer = getAccountByMailAddress(job.commitMailAddress, false).map(_.mailAddress).toSeq
           val collaborators = getCollaboratorUserNames(job.userName, job.repositoryName).flatMap { userName =>
             getAccountByUserName(userName).map(_.mailAddress)
           }
           (committer ++ collaborators).distinct
         } else Nil
+
+        (recipients, cleanupTasks)
       }
+
+      // Deleting a workspace is thousands of small files on the shared volume; do it after the
+      // result and commit status are committed, so the build does not stay "Running" while it runs.
+      BuildCleanup.submit(cleanup)
 
       // Send email once the result is committed: a failing mail server must not roll it back
       if(recipients.nonEmpty){
