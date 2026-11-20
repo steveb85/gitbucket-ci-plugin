@@ -120,9 +120,11 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
 
         if(isGitAvailable){
           sb.append(s"git clone ${job.buildUserName}/${job.buildRepositoryName}\n")
+          val cloneStart = System.currentTimeMillis()
           val cloneExit = runProcess(job, buildDir, buildDir,
-            s"git -c protocol.file.allow=always clone --no-hardlinks $repoPath ${dir.getAbsolutePath}",
+            s"git -c protocol.file.allow=always clone --quiet --no-checkout --no-hardlinks $repoPath ${dir.getAbsolutePath}",
             deadline, targetUrl, "CLONE TIMEOUT: build time limit exceeded, killing the clone process\n")
+          val cloneMillis = System.currentTimeMillis() - cloneStart
 
           if(cancelled.get() == true){
             throw new BuildJobCancelException()
@@ -130,11 +132,14 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
           if(cloneExit != 0){
             throw new RuntimeException(s"git clone failed with exit code ${cloneExit}: $repoPath -> ${dir.getAbsolutePath}")
           }
+          sb.append(s"clone complete in ${cloneMillis} ms\n")
 
           sb.append(s"git checkout ${job.sha}\n")
+          val checkoutStart = System.currentTimeMillis()
           val checkoutExit = runProcess(job, buildDir, dir,
-            s"git checkout ${job.sha}",
+            s"git -c advice.detachedHead=false checkout --quiet ${job.sha}",
             deadline, targetUrl, "CHECKOUT TIMEOUT: build time limit exceeded, killing the checkout process\n")
+          val checkoutMillis = System.currentTimeMillis() - checkoutStart
 
           if(cancelled.get() == true){
             throw new BuildJobCancelException()
@@ -142,6 +147,7 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
           if(checkoutExit != 0){
             throw new RuntimeException(s"git checkout failed with exit code ${checkoutExit}")
           }
+          sb.append(s"checkout complete in ${checkoutMillis} ms\n")
         }else{
           // Fallback for hosts without the git CLI.
           Using.resource(Git.cloneRepository()
