@@ -111,7 +111,9 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
         val deadline =
           if(systemCIConfig.buildTimeoutMinutes > 0) startTime.getTime + systemCIConfig.buildTimeoutMinutes.toLong * 60 * 1000 else Long.MaxValue
 
-        val uri = getRepositoryDir(job.buildUserName, job.buildRepositoryName).toURI.toString
+        // Path.toUri produces file:///...; File.toURI produces file:/..., which the git CLI
+        // parses as an scp-style "file" host and hands to ssh.
+        val uri = getRepositoryDir(job.buildUserName, job.buildRepositoryName).toPath.toUri.toString
 
         if(isGitAvailable){
           sb.append(s"git clone ${job.buildUserName}/${job.buildRepositoryName}\n")
@@ -123,7 +125,7 @@ class BuildJobThread(queue: LinkedBlockingQueue[BuildJob], threads: LinkedBlocki
             throw new BuildJobCancelException()
           }
           if(cloneExit != 0){
-            throw new RuntimeException(s"git clone failed with exit code ${cloneExit}")
+            throw new RuntimeException(s"git clone failed with exit code ${cloneExit}: $uri -> ${dir.getAbsolutePath}")
           }
 
           sb.append(s"git checkout ${job.sha}\n")
